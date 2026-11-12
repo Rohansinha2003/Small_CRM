@@ -1,36 +1,43 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ChatDesk — WhatsApp-first CRM for micro-businesses
 
-## Getting Started
+Next.js (App Router) + Tailwind + Postgres. Multi-tenant SaaS with Razorpay billing.
 
-First, run the development server:
+## Run
+    npm install && npm run dev      # http://localhost:3000
+    npm run build && npm start
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## Architecture
+- Auth: email + password (scrypt), random session tokens stored hashed in Postgres, HttpOnly SameSite=Lax cookie,
+  Origin check on all writes (CSRF), DB-backed rate limiting on login/signup, `proxy.ts` gate on app pages.
+- Data: one Postgres database, every row scoped by `workspace_id` taken from the session (never from the request).
+  Schema is created automatically on first request (`src/server/db.ts`).
+- Client: optimistic UI; `src/lib/store.tsx` diffs state and syncs to `/api/sync` in batches (≤500 changes per request);
+  shows Saving/Saved + retry on failure. Every 20s it polls the cheap `/api/version` fingerprint and reloads only when
+  a teammate changed something. Concurrent edits to the same record are last-write-wins.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Business model
+- First `PILOT_SLOTS` (default 5) workspaces become **pilots**: free full (Growth) access. Everyone after starts on **Free**.
+- Plans: Free (100 contacts, 1 user) · Starter ₹499/mo (2,000 contacts, 3 users, broadcasts) · Growth ₹1,499/mo (50,000 contacts, 10 users). Yearly = 10 months.
+- Payments: Razorpay Orders (prepaid, UPI/cards/netbanking). Amount is set server-side; fulfilment happens on signature-verified
+  browser callback **and** on the signed webhook (idempotent). Plans expire back to Free when the period ends (data is kept).
+- Limits (contacts, users, total stored items, broadcasts) are enforced server-side, never trusted from the client.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Admin
+- **Workspace admin** (`/team`): roles (Owner / Admin / Agent), invite links, password-reset links, remove members, activity/audit log, full data export.
+- **Platform admin** (`/admin`, emails in `ADMIN_EMAILS`): all workspaces, usage, revenue/MRR, grant/revoke plans, mark pilots, suspend, delete.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Deploy (Vercel) — full checklist in DEPLOY.md
+1. Create Postgres (Vercel Marketplace -> Neon). 2. Set every variable in `.env.example`. 3. Deploy.
+4. In Razorpay, register the webhook URL above. 5. Run the test suites against the live URL (use Razorpay *test* keys first).
 
-## Learn More
+## Tests
+    npm run build && npm start -p 3111   # with env: PILOT_SLOTS=1 SIGNUP_RATE_MAX=1000 ADMIN_EMAILS=platform-admin@chatdesk.test
+                                         #   RAZORPAY_API_BASE=http://localhost:4010 RAZORPAY_KEY_ID=rzp_test_x RAZORPAY_KEY_SECRET=test_secret RAZORPAY_WEBHOOK_SECRET=whsec_test CRON_SECRET=cron_test_secret
+    node scripts/fake-razorpay.mjs &                         # stand-in for api.razorpay.com
+    BASE=http://localhost:3111 node scripts/e2e.mjs          # 45 core API/security checks
+    BASE=http://localhost:3111 node scripts/e2e-saas.mjs     # 72 billing/team/admin checks
+    BASE=http://localhost:3111 node scripts/browser-e2e.mjs  # real-browser checks (needs: npm i playwright)
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Not built yet
+Email delivery (verification, receipts, forgot-password emails), auto-renewing subscriptions, GST invoices,
+WhatsApp Cloud API (inbound/outbound sync), 2FA.
